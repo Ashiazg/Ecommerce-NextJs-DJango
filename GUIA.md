@@ -31,6 +31,7 @@ Abre DOS terminales y el código en VS Code. No leas pasivamente — **escribe c
 - [2.2 El problema del fetch a pie](#22-el-problema-del-fetch-a-pie)
 - [2.3 TanStack Query: caché de datos del servidor](#23-tanstack-query-caché-de-datos-del-servidor)
 - [2.4 Mutaciones: crear y modificar datos](#24-mutaciones-crear-y-modificar-datos)
+- [2.5 Axios: alternativa a fetch](#25-axios-alternativa-a-fetch)
 
 ### Bloque 3 — Estado Local (Zustand + Zod)
 - [3.1 Zustand vs TanStack Query](#31-zustand-vs-tanstack-query)
@@ -1040,6 +1041,170 @@ export function useDeleteProduct() {
   });
 }
 ```
+</details>
+
+---
+
+## 2.5 Axios: alternativa a fetch
+
+### Concepto
+
+**Axios** es una librería HTTP para JavaScript. Es como `fetch` pero con superpoderes:
+
+| Característica | fetch nativo | Axios |
+|:---------------|:-------------|:------|
+| JSON automático | ❌ Hay que llamar `res.json()` | ✅ Devuelve JS object directamente |
+| Errores HTTP (4xx, 5xx) | ❌ No lanza error, hay que revisar `res.ok` | ✅ Lanza error automáticamente |
+| Interceptores | ❌ No tiene | ✅ Puedes interceptar todas las peticiones/respuestas |
+| Timeout | ❌ No tiene configurable | ✅ `timeout: 5000` |
+| Progreso de subida | ❌ No tiene | ✅ `onUploadProgress` |
+| Cancelación | ❌ Compleja (AbortController) | ✅ `CancelToken` |
+
+### Instalación
+
+```bash
+cd frontend
+npm install axios
+```
+
+### Axios instance
+
+En lugar de repetir la URL base en cada petición, creas una **instancia**:
+
+```ts
+// lib/api.ts — versión con Axios
+import axios from "axios";
+
+const api = axios.create({
+  baseURL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api",
+  timeout: 10000,  // 10 segundos de espera máxima
+});
+```
+
+`api.get()`, `api.post()`, `api.patch()`, `api.delete()` funcionan igual que fetch, pero:
+- **No necesitas** `${API}/products/` — el `baseURL` se añade solo
+- **No necesitas** `res.json()` — Axios devuelve `response.data` ya parseado
+- **No necesitas** revisar `res.ok` — Axios lanza error si la respuesta es 4xx/5xx
+
+### Interceptor de auth (el token JWT)
+
+Con fetch tienes que agregar el token manualmente en CADA función. Con Axios lo haces UNA VEZ con un **interceptor**:
+
+```ts
+// Se ejecuta ANTES de cada petición
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem("access_token");
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+```
+
+A partir de ahí, TODAS las peticiones que hagas con `api` llevan el token automáticamente.
+
+### Interceptor de respuesta (errores + refresh)
+
+```ts
+api.interceptors.response.use(
+  (response) => response,  // Si la respuesta es OK, no haces nada
+  async (error) => {
+    if (error.response?.status === 401) {
+      // Token expirado — intentar renovar
+      const refresh = localStorage.getItem("refresh_token");
+      if (refresh) {
+        try {
+          const { data } = await axios.post(
+            "http://localhost:8000/api/token/refresh/",
+            { refresh }
+          );
+          localStorage.setItem("access_token", data.access);
+          // Reintentar la petición original con el nuevo token
+          error.config.headers.Authorization = `Bearer ${data.access}`;
+          return api(error.config);
+        } catch {
+          // Si no se puede renovar, redirigir al login
+          localStorage.removeItem("access_token");
+          localStorage.removeItem("refresh_token");
+          window.location.href = "/auth/login";
+        }
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+```
+
+**Esto soluciona el problema del ejercicio del token expirado** en la sección 4.5 — el interceptor lo maneja automáticamente sin que cada componente tenga que preocuparse.
+
+### Antes vs Después
+
+**Antes (con fetch en lib/api.ts):**
+
+```ts
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+
+async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = localStorage.getItem("access_token");
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  if (!(options?.body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+  }
+  const res = await fetch(`${API}${path}`, { ...options, headers });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || err.message || "Request failed");
+  }
+  return res.json();
+}
+
+export async function getProducts(): Promise<Product[]> {
+  return request("/products/");
+}
+```
+
+**Después (con Axios):**
+
+```ts
+const api = axios.create({
+  baseURL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api",
+});
+
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem("access_token");
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
+// No necesitas función request() — usa api directamente
+export async function getProducts(): Promise<Product[]> {
+  const { data } = await api.get("/products/");
+  return data;  // ← Axios ya parseó el JSON
+}
+
+export async function createProduct(input: any): Promise<Product> {
+  const { data } = await api.post("/products/", input);
+  return data;
+}
+```
+
+Menos código, misma funcionalidad, más legible.
+
+### Ejercicio
+
+Convierte `getCategories()` a Axios:
+
+<details>
+<summary>Solución</summary>
+
+```ts
+export async function getCategories(): Promise<Category[]> {
+  const { data } = await api.get("/categories/");
+  return data;
+}
+```
+
 </details>
 
 ---
